@@ -1,22 +1,30 @@
 import { fromDate } from "@foxglove/rostime";
 import { CameraCalibration, CompressedImage, RawImage } from "@foxglove/schemas";
 import { PanelExtensionContext, SettingsTreeAction } from "@foxglove/studio";
-import { useEffect, useLayoutEffect, useState, useCallback } from "react";
+import { Buffer } from "buffer";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
 import ReactDOM from "react-dom";
 
 import { Config, buildSettingsTree, settingsActionReducer } from "./panelSettings";
 
 function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Element {
   const [image, setImage] = useState<RawImage | undefined>();
+  const [imageC, setImageC] = useState<CompressedImage | undefined>();
   const [pubTopic, setPubTopic] = useState<string | undefined>();
   const [renderDone, setRenderDone] = useState<(() => void) | undefined>();
   const [count, setCount] = useState(0);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const [config, setConfig] = useState<Config>(() => {
     const partialConfig = context.initialState as Partial<Config>;
+    partialConfig.width ??= 800;
+    partialConfig.height ??= 600;
+    partialConfig.frameRate ??= 15;
     partialConfig.pubTopic ??= "/image";
     partialConfig.publishMode ??= false;
     partialConfig.publishFrameId ??= "";
+    partialConfig.compressed ??= true;
     return partialConfig as Config;
   });
 
@@ -31,9 +39,9 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
   useEffect(() => {
     context.updatePanelSettingsEditor({
       actionHandler: settingsActionHandler,
-      nodes: buildSettingsTree(config),
+      nodes: buildSettingsTree(config, videoDevices),
     });
-  }, [config, context, settingsActionHandler]);
+  }, [config, context, settingsActionHandler, videoDevices]);
 
   // We use a layout effect to setup render handling for our panel. We also setup some topic subscriptions.
   useLayoutEffect(() => {
@@ -77,13 +85,31 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
   }, [count]);
 
   useEffect(() => {
+    async function fetchMediaDevices() {
+      const rawDevices = await navigator.mediaDevices.enumerateDevices();
+      // const newVideoDevices: MediaDeviceInfo[] = [];
+      setVideoDevices(rawDevices.filter((v) => v.kind === "videoinput"));
+    }
+
+    fetchMediaDevices().catch((reason: any) => {
+      console.log(reason);
+    });
+  }, []);
+
+  useEffect(() => {
     navigator.mediaDevices
       .enumerateDevices()
       .then((value) => {
         const constraints = {
           audio: false,
-          video: { facingMode: "environment", width: 1024, height: 768 },
+          video: {
+            width: config.width,
+            height: config.height,
+            frameRate: config.frameRate,
+            deviceId: config.deviceName,
+          },
         };
+        console.log(navigator.mediaDevices.getSupportedConstraints());
         return navigator.mediaDevices
           .getUserMedia(constraints)
           .then((stream: MediaStream) => {
@@ -94,14 +120,15 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
             video.onloadedmetadata = () => { video.play(); };
             video.oncanplay = () => { console.log("On play"); }
             video.srcObject = stream;
-        }).catch((reason: any) => {
+          })
+          .catch((reason: any) => {
             console.log(reason);
         });
       })
       .catch((reason: any) => {
         console.log(reason);
       });
-  }, []);
+  }, [config]);
 
   useEffect(() => {
     const video = document.querySelector("video");
@@ -109,7 +136,13 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
       return;
     }
 
-    const canvas = new OffscreenCanvas(video.videoWidth, video.videoHeight);
+    // Not sure if normal or offscreen canvas is better?
+    // const canvas = new OffscreenCanvas(video.videoWidth, video.videoHeight);
+    if (!canvasRef.current) {
+      return;
+    }
+    const canvas = canvasRef.current;
+
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       console.log("no context");
@@ -117,25 +150,51 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
     }
     ctx.drawImage(video, 0, 0);
 
-    const myImageData: Uint8ClampedArray = ctx.getImageData(0, 0, 1024, 768).data;
-
-    if (myImageData.length === 0) {
-      console.log("no data");
+    if (canvas.width === 0 || canvas.height === 0) {
       return;
     }
 
-    const tmpMsg = {
-      timestamp: fromDate(new Date()),
-      frame_id: "test_frame",
-      width: canvas.width,
-      height: canvas.height,
-      encoding: "rgba8",
-      step: canvas.width * 4,
-      data: new Uint8Array(myImageData),
-    };
+    if (config.compressed) {
+      const base64Canvas = canvas.toDataURL("image/jpeg").split(";base64,")[1];
 
-    setImage(tmpMsg);
-  }, [count]);
+      const tmpMsg = {
+        timestamp: fromDate(new Date()),
+        frame_id: "test_frame",
+        format: "jpeg",
+        data: Buffer.from(base64Canvas ? base64Canvas : "", "base64"),
+      };
+
+      setImageC(tmpMsg);
+    } else {
+      const myImageData: Uint8ClampedArray = ctx.getImageData(
+        0,
+        0,
+        config.width,
+        config.height,
+      ).data;
+
+      if (myImageData.length === 0) {
+        console.log("no data");
+        return;
+      }
+
+      const tmpMsg = {
+        timestamp: fromDate(new Date()),
+        frame_id: "test_frame",
+        width: canvas.width,
+        height: canvas.height,
+        encoding: "rgba8",
+        step: canvas.width * 4,
+        data: new Uint8Array(myImageData),
+      };
+
+      if (tmpMsg.width === 0 || tmpMsg.height === 0) {
+        return;
+      }
+
+      setImage(tmpMsg);
+    }
+  }, [count, config]);
 
   // Advertise the topic to publish
   useEffect(() => {
@@ -145,7 +204,11 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
           if (oldTopic) {
             context.unadvertise?.(oldTopic);
           }
-          context.advertise?.(config.pubTopic, "sensor_msgs/Image");
+          // context.advertise?.(config.pubTopic, "sensor_msgs/Image");
+          context.advertise?.(
+            config.pubTopic,
+            config.compressed ? "sensor_msgs/CompressedImage" : "sensor_msgs/Image",
+          );
           return config.pubTopic;
         } else {
           if (oldTopic) {
@@ -155,7 +218,12 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
         }
       });
     }
-  }, [config.pubTopic, config.publishMode, context]);
+  }, [config.pubTopic, config.publishMode, config.compressed, context]);
+
+  useEffect(() => {
+    console.log("Device ID is");
+    console.log(config.deviceName);
+  }, [config.deviceName]);
 
   // Publish the image message
   useEffect(() => {
@@ -164,9 +232,17 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
     }
 
     if (pubTopic && pubTopic === config.pubTopic) {
-      context.publish?.(pubTopic, image);
+      if (config.compressed) {
+        if (imageC && imageC.data.length > 0) {
+          context.publish?.(pubTopic, imageC);
+        }
+      } else {
+        if (image && image.data.length > 0 && image.width > 0) {
+          context.publish?.(pubTopic, image);
+        }
+      }
     }
-  }, [context, config.pubTopic, config.publishMode, image, pubTopic]);
+  }, [context, config.pubTopic, config.publishMode, config.compressed, image, imageC, pubTopic]);
 
   // Invoke the done callback once the render is complete
   useEffect(() => {
@@ -181,6 +257,7 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
     <div>
       {count}
       <video></video>
+      <canvas ref={canvasRef} width={config.width} height={config.height}></canvas>
     </div>
   );
 }

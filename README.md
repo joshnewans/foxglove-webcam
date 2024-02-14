@@ -25,5 +25,12 @@ With Node and Foxglove installed
  - `npm run package` to package it up into a `.foxe` file
 
 
+## To Do
+- Make it faster
+- Make it drop frames instead of falling behind
+- Add more control over camera parameters (and make the existing controls work better)
+- Microphone support
+- OffscreenCanvas (has some issues)
+
 ## Useful links
 https://webrtchacks.com/still-image-from-webcam-stream-approaches/
