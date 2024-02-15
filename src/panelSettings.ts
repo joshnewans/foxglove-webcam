@@ -13,6 +13,7 @@ export type Config = {
   compressed: boolean;
   pubTopic: string;
   publishFrameId: string;
+  pubRate: number;
   width: number;
   height: number;
   frameRate: number;
@@ -31,25 +32,12 @@ export function buildSettingsTree(
   config: Config,
   videoDevices: MediaDeviceInfo[],
 ): SettingsTreeNodes {
-  console.log("Devices");
-  console.log(videoDevices);
-
   const deviceLabels = videoDevices.map((v) => {
-    console.log(`Do thing ${v.label}`);
     return {
       label: v.label,
       value: v.deviceId,
     } as DeviceLabel;
   });
-
-  // const deviceLabels = videoDevices.map((v) => v);
-  // const deviceLabels = videoDevices;
-
-  // const deviceLabels = [];
-  // videoDevices.forEach((v) => {console.log(v);});
-
-  console.log("Here");
-  console.log(deviceLabels);
 
   const dataSourceFields: SettingsTreeFields = {
     deviceName: {
@@ -94,6 +82,11 @@ export function buildSettingsTree(
       label: "Image Frame ID",
       input: "string",
       value: config.publishFrameId,
+    },
+    pubRate: {
+      label: "Publish Rate",
+      input: "number",
+      value: config.pubRate,
     },
   };
 

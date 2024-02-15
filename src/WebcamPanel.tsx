@@ -20,11 +20,12 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
     const partialConfig = context.initialState as Partial<Config>;
     partialConfig.width ??= 800;
     partialConfig.height ??= 600;
-    partialConfig.frameRate ??= 15;
+    partialConfig.frameRate ??= 20;
     partialConfig.pubTopic ??= "/image";
     partialConfig.publishMode ??= false;
     partialConfig.publishFrameId ??= "";
     partialConfig.compressed ??= true;
+    partialConfig.pubRate ??= 10;
     return partialConfig as Config;
   });
 
@@ -72,22 +73,10 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
     context.watch("currentFrame");
   }, [context]);
 
-  useEffect(() => {
-    //Implementing the setInterval method
-    const interval = setInterval(() => {
-      setCount(count + 1);
-    }, 150);
-
-    //Clearing the interval
-    return () => {
-      clearInterval(interval);
-    };
-  }, [count]);
-
+  // On Startup, update the list of available devices
   useEffect(() => {
     async function fetchMediaDevices() {
       const rawDevices = await navigator.mediaDevices.enumerateDevices();
-      // const newVideoDevices: MediaDeviceInfo[] = [];
       setVideoDevices(rawDevices.filter((v) => v.kind === "videoinput"));
     }
 
@@ -96,40 +85,56 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
     });
   }, []);
 
+  // Debug when changing device
   useEffect(() => {
+    console.log(`Using device with id ${config.deviceName}`);
+  }, [config.deviceName]);
+
+  // Get the media stream and attach it to a video element
+  useEffect(() => {
+    // Declare the constraints we want
+    const constraints = {
+      audio: false,
+      video: {
+        width: config.width,
+        height: config.height,
+        frameRate: config.frameRate,
+        deviceId: config.deviceName,
+      },
+    };
+
     navigator.mediaDevices
-      .enumerateDevices()
-      .then((value) => {
-        const constraints = {
-          audio: false,
-          video: {
-            width: config.width,
-            height: config.height,
-            frameRate: config.frameRate,
-            deviceId: config.deviceName,
-          },
+      .getUserMedia(constraints)
+      .then((stream: MediaStream) => {
+        const video = document.querySelector("video");
+        if (!video) {
+          return;
+        }
+        video.onloadedmetadata = () => {
+          video.play();
         };
-        console.log(navigator.mediaDevices.getSupportedConstraints());
-        return navigator.mediaDevices
-          .getUserMedia(constraints)
-          .then((stream: MediaStream) => {
-            const video = document.querySelector("video");
-            if (!video) {
-              return;
-            }
-            video.onloadedmetadata = () => { video.play(); };
-            video.oncanplay = () => { console.log("On play"); }
-            video.srcObject = stream;
-          })
-          .catch((reason: any) => {
-            console.log(reason);
-        });
+        // video.oncanplay = () => {
+        //   console.log("On play");
+        // };
+        video.srcObject = stream;
       })
       .catch((reason: any) => {
         console.log(reason);
       });
   }, [config]);
 
+  // Create a timer to poll the video
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCount(count + 1);
+    }, 1000 / config.pubRate);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [count, config.pubRate]);
+
+  // Take a snapshot of the video and publish it
   useEffect(() => {
     const video = document.querySelector("video");
     if (!video) {
@@ -159,7 +164,7 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
 
       const tmpMsg = {
         timestamp: fromDate(new Date()),
-        frame_id: "test_frame",
+        frame_id: config.publishFrameId,
         format: "jpeg",
         data: Buffer.from(base64Canvas ? base64Canvas : "", "base64"),
       };
@@ -180,7 +185,7 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
 
       const tmpMsg = {
         timestamp: fromDate(new Date()),
-        frame_id: "test_frame",
+        frame_id: config.publishFrameId,
         width: canvas.width,
         height: canvas.height,
         encoding: "rgba8",
@@ -204,7 +209,6 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
           if (oldTopic) {
             context.unadvertise?.(oldTopic);
           }
-          // context.advertise?.(config.pubTopic, "sensor_msgs/Image");
           context.advertise?.(
             config.pubTopic,
             config.compressed ? "sensor_msgs/CompressedImage" : "sensor_msgs/Image",
@@ -219,11 +223,6 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
       });
     }
   }, [config.pubTopic, config.publishMode, config.compressed, context]);
-
-  useEffect(() => {
-    console.log("Device ID is");
-    console.log(config.deviceName);
-  }, [config.deviceName]);
 
   // Publish the image message
   useEffect(() => {
@@ -255,7 +254,6 @@ function WebcamPanel({ context }: { context: PanelExtensionContext }): JSX.Eleme
 
   return (
     <div>
-      {count}
       <video></video>
       <canvas ref={canvasRef} width={config.width} height={config.height}></canvas>
     </div>
